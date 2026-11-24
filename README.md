@@ -27,7 +27,7 @@ The Finder launcher `run.command` automatically uses `.venv/bin/python` when a v
 
 1. Paste a YouTube URL and click **Preview video**. Network access is necessary; yt-dlp returns formats and metadata.
 2. View the thumbnail, title/channel, available streams, resolutions, codecs, and per-format size estimates.
-3. Click a format row to select its `yt-dlp` stream ID(s), or click **Use automatic quality**. Choose a compatible output type: video rows with MP4/MKV/WEBM, audio rows with MP3/M4A/Original audio.
+3. Leave **Automatic** selected to let MacTube choose streams using the **Maximum resolution (Automatic)** setting. To choose a specific stream, select its row. MacTube disables the resolution limit and switches to a compatible output format if needed. Use **Switch to Automatic** to return to automatic selection.
 4. Set the output folder, then click **Download now** or add items to the queue.
 5. Track percentage and downloaded bytes under the tabs. For split video/audio downloads, these values represent the **current stream**, and may restart when the next stream begins. Postprocessing/merging can take longer after 100%.
 

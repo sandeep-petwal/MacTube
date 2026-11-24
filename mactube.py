@@ -34,6 +34,9 @@ LINE = '#364359'
 ACCENT = '#264f9e'
 SELECTED = '#31558a'
 
+AUDIO_FORMATS = ('MP3', 'M4A', 'Original audio')
+PREVIEWED_FORMATS_HELP = 'Choose Automatic or select a specific stream. Sizes marked ~ are estimates.'
+
 
 def ui_button(parent, label, command, primary=False):
     style = 'Primary.TButton' if primary else 'TButton'
@@ -74,6 +77,7 @@ class MacTube:
         self.available_formats = []
         self.selected_format = None
         self.preview_photo = None
+        self.spinner_timer = None
         self.url_var = tk.StringVar()
         self.folder_var = tk.StringVar(value=self.settings['folder'])
         self.format_var = tk.StringVar(value=self.settings['format'] if self.settings['format'] in FORMATS else 'MP4')
@@ -91,7 +95,7 @@ class MacTube:
         self.percent_var = tk.StringVar(value='0.0%')
         self.preview_title_var = tk.StringVar(value='Your video preview will appear here')
         self.preview_meta_var = tk.StringVar(value='Paste a YouTube URL above and select Preview')
-        self.format_help_var = tk.StringVar(value='Choose Preview to see available formats and their sizes.')
+        self.format_help_var = tk.StringVar(value='Preview a video to see specific streams and available sizes.')
         self.queue_count = tk.StringVar(value='0 items')
         self._styles()
         self._build()
@@ -138,36 +142,54 @@ class MacTube:
         st.configure('Modern.Horizontal.TProgressbar', background=BLUE, thickness=13)
 
     def _build_scrollable_tab(self, tab, build):
-        canvas = tk.Canvas(tab, bg=BG, highlightthickness=0, yscrollincrement=16)
+        canvas = tk.Canvas(tab, bg=BG, highlightthickness=0, yscrollincrement=1)
         content = tk.Frame(canvas, bg=BG, padx=2, pady=12)
         window = canvas.create_window(0, 0, window=content, anchor='nw')
         content.bind('<Configure>', lambda _event: canvas.configure(scrollregion=canvas.bbox(window)))
         canvas.bind('<Configure>', lambda event: canvas.itemconfigure(window, width=event.width))
         pack_scrollable(canvas)
 
-        def scroll(event):
-            if event.num in (4, 5):
-                units = -3 if event.num == 4 else 3
-            elif sys.platform == 'darwin':
-                units = -event.delta
+        def scroll(event, precise=False):
+            if precise:
+                # Tk packs the signed vertical delta into the low 16 bits.
+                delta = event.delta & 0xffff
+                pixels = -(delta if delta < 0x8000 else delta - 0x10000)
+            elif event.num in (4, 5):
+                pixels = -48 if event.num == 4 else 48
+            elif abs(event.delta) >= 120:
+                pixels = -round(event.delta * 48 / 120)
             else:
-                units = -int(event.delta / 120) * 3
-            if units:
-                canvas.yview_scroll(units, 'units')
-                return 'break'
+                pixels = -event.delta * 8 if sys.platform == 'darwin' else 0
+            if not pixels:
+                return
+
+            widget = event.widget
+            if isinstance(widget, (ttk.Treeview, tk.Text)):
+                top, bottom = widget.yview()
+                if (pixels < 0 and top > 0) or (pixels > 0 and bottom < 1):
+                    units = max(1, round(abs(pixels) / 26))
+                    if isinstance(widget, tk.Text):
+                        widget.yview_scroll(pixels, 'pixels')
+                    else:
+                        widget.yview_scroll(units if pixels > 0 else -units, 'units')
+                    return 'break'
+
+            canvas.yview_scroll(pixels, 'units')
+            return 'break'
 
         for sequence in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
             tab.bind(sequence, scroll)
+        if tab.tk.call('package', 'vcompare', tab.tk.call('package', 'provide', 'Tk'), '9.0') >= 0:
+            tab.bind('<TouchpadScroll>', lambda event: scroll(event, precise=True))
 
-        # Keep wheel handling local to the tab and preserve nested widget scrolling.
         def add_scroll_bindings(widget):
-            if not isinstance(widget, (ttk.Treeview, tk.Text, ttk.Combobox)):
-                widget.bindtags((str(tab), *widget.bindtags()))
+            widget.bindtags((str(tab), *widget.bindtags()))
             for child in widget.winfo_children():
                 add_scroll_bindings(child)
 
         build(content)
-        add_scroll_bindings(canvas)
+        for child in tab.winfo_children():
+            add_scroll_bindings(child)
 
     def _build(self):
         outer = tk.Frame(self.root, bg=BG, padx=22, pady=16)
@@ -223,32 +245,45 @@ class MacTube:
         preview_card.pack(fill='x', pady=(0, 12))
         preview_row = tk.Frame(preview_card, bg=SURFACE)
         preview_row.pack(fill='x')
-        self.thumbnail_label = tk.Label(preview_row, text='▶\nVIDEO PREVIEW', bg=FIELD,
-                                        fg=MUTED, font=('Helvetica', 12, 'bold'), width=29,
-                                        height=7, justify='center')
-        self.thumbnail_label.pack(side='left', padx=(0, 14))
+        thumbnail = tk.Frame(preview_row, bg=FIELD, width=240, height=135)
+        thumbnail.pack(side='left', padx=(0, 14))
+        self.thumbnail_label = tk.Label(thumbnail, text='▶  Video preview', bg=FIELD,
+                                        fg=MUTED, font=('Helvetica', 12, 'bold'))
+        self.thumbnail_label.place(relwidth=1, relheight=1)
+        self.spinner = tk.Canvas(thumbnail, width=36, height=36, bg=FIELD, highlightthickness=0)
+        self.spinner.create_oval(5, 5, 31, 31, outline=LINE, width=3)
+        self.spinner_arc = self.spinner.create_arc(5, 5, 31, 31, outline=BLUE, width=3,
+                                                   extent=105, style='arc')
         content = tk.Frame(preview_row, bg=SURFACE)
         content.pack(side='left', fill='both', expand=True)
-        tk.Label(content, textvariable=self.preview_title_var, bg=SURFACE, fg=INK,
-                 justify='left', wraplength=600, anchor='nw',
-                 font=('Helvetica', 15, 'bold')).pack(anchor='w', fill='x', pady=(6, 10))
-        tk.Label(content, textvariable=self.preview_meta_var, bg=SURFACE, fg=MUTED,
-                 justify='left', wraplength=600, anchor='nw',
-                 font=('Helvetica', 11)).pack(anchor='w', fill='x')
+        title = tk.Label(content, textvariable=self.preview_title_var, bg=SURFACE, fg=INK,
+                         justify='left', anchor='nw', font=('Helvetica', 15, 'bold'))
+        title.pack(anchor='w', fill='x', pady=(6, 10))
+        meta = tk.Label(content, textvariable=self.preview_meta_var, bg=SURFACE, fg=MUTED,
+                        justify='left', anchor='nw', font=('Helvetica', 11))
+        meta.pack(anchor='w', fill='x')
+
+        def wrap_preview(event):
+            title.configure(wraplength=event.width)
+            meta.configure(wraplength=event.width)
+
+        content.bind('<Configure>', wrap_preview)
 
         fmt_card = card(parent, padx=13, pady=10)
         fmt_card.pack(fill='both', expand=True, pady=(0, 12))
         hdr = tk.Frame(fmt_card, bg=SURFACE)
         hdr.pack(fill='x', pady=(0, 5))
-        text(hdr, 'Available formats', 13, True).pack(side='left')
-        ui_button(hdr, 'Use automatic quality', self.clear_format).pack(side='right')
+        text(hdr, 'Download quality', 13, True).pack(side='left')
+        self.quality_mode_var = tk.StringVar(value='Automatic')
+        tk.Label(hdr, textvariable=self.quality_mode_var, bg=SURFACE, fg=BLUE,
+                 font=('Helvetica', 11, 'bold')).pack(side='right')
         columns = ('quality', 'container', 'fps', 'codec', 'size')
         format_list = tk.Frame(fmt_card, bg=SURFACE)
         format_list.pack(fill='both', expand=True)
         self.formats_tree = ttk.Treeview(format_list, columns=columns, show='headings',
                                          height=6, selectmode='browse', style='Modern.Treeview')
         headings = {'quality': 'Resolution / type', 'container': 'File', 'fps': 'FPS',
-                    'codec': 'Codec', 'size': 'File size'}
+                    'codec': 'Codec', 'size': 'Stream size'}
         widths = {'quality': 190, 'container': 75, 'fps': 55, 'codec': 170, 'size': 135}
         for col in columns:
             self.formats_tree.heading(col, text=headings[col])
@@ -256,6 +291,10 @@ class MacTube:
                                      stretch=col in ('quality', 'codec'))
         pack_scrollable(self.formats_tree)
         self.formats_tree.bind('<<TreeviewSelect>>', self.choose_format)
+        self.formats_tree.insert('', 'end', iid='auto', values=('Automatic', '—', '—', '—', '—'))
+        self.formats_tree.selection_set('auto')
+        self.formats_tree.focus('auto')
+        self.auto_button = ui_button(hdr, 'Switch to Automatic', self.clear_format)
         tk.Label(fmt_card, textvariable=self.format_help_var, bg=SURFACE, fg=MUTED,
                  anchor='w', font=('Helvetica', 9), wraplength=950,
                  justify='left').pack(fill='x', pady=(6, 0))
@@ -268,7 +307,7 @@ class MacTube:
         first.columnconfigure(1, weight=1)
         for i, (label, variable, values) in enumerate([
             ('Output format', self.format_var, FORMATS),
-            ('Auto quality limit', self.quality_var, list(QUALITIES))
+            ('Maximum resolution (Automatic)', self.quality_var, list(QUALITIES))
         ]):
             cell = tk.Frame(first, bg=SURFACE)
             cell.grid(row=0, column=i, sticky='ew', padx=(0, 12) if i == 0 else (12, 0))
@@ -299,8 +338,6 @@ class MacTube:
         actions.pack(fill='x', pady=(9, 0))
         ui_button(actions, 'Add to queue', self.add_to_queue).pack(side='left')
         ui_button(actions, 'Download now', self.download_now, True).pack(side='left', padx=(9, 0))
-        text(actions, 'Formats with ~ are estimated. Conversion may change final size.',
-             9, color=MUTED).pack(side='right')
 
     def _queue_tab(self, parent):
         wrap = card(parent, padx=14, pady=12)
@@ -341,17 +378,35 @@ class MacTube:
         if Image is None:
             self.write_log('Thumbnail preview requires Pillow: python3.13 -m pip install Pillow')
 
+    def _preview_loading(self, loading):
+        self.preview_button.configure(
+            text='Loading preview…' if loading else 'Preview video',
+            state='disabled' if loading else 'normal')
+        if loading:
+            self.thumbnail_label.place_forget()
+            self.spinner.place(relx=0.5, rely=0.5, anchor='center')
+            self._spin_preview()
+        else:
+            if self.spinner_timer is not None:
+                self.root.after_cancel(self.spinner_timer)
+                self.spinner_timer = None
+            self.spinner.place_forget()
+            self.thumbnail_label.place(relwidth=1, relheight=1)
+
+    def _spin_preview(self, angle=0):
+        self.spinner.itemconfigure(self.spinner_arc, start=angle)
+        self.spinner_timer = self.root.after(30, self._spin_preview, (angle - 15) % 360)
+
     def invalidate_preview(self):
         self.preview_generation += 1
-        self.preview_button.configure(state='normal')
+        self._preview_loading(False)
         self.preview_url = None
         self.available_formats = []
-        self.selected_format = None
-        self.formats_tree.delete(*self.formats_tree.get_children())
-        self.format_help_var.set('Preview this URL to inspect available sizes. Selecting a format overrides auto quality.')
+        self.formats_tree.delete(*self.formats_tree.get_children()[1:])
+        self.clear_format()
         self.preview_title_var.set('Your video preview will appear here')
-        self.preview_meta_var.set('Paste a URL and select Preview')
-        self.thumbnail_label.configure(image='', text='▶\nVIDEO PREVIEW')
+        self.preview_meta_var.set('Paste a URL and select Preview video')
+        self.thumbnail_label.configure(image='', text='▶  Video preview')
         self.preview_photo = None
 
     def paste(self):
@@ -361,6 +416,8 @@ class MacTube:
             messagebox.showinfo('Clipboard', 'Clipboard does not contain text.')
 
     def preview(self):
+        if self.spinner_timer is not None:
+            return
         url = self.url_var.get().strip()
         if not valid_url(url):
             messagebox.showerror('Invalid URL', 'Enter a valid YouTube video or playlist URL.')
@@ -371,7 +428,9 @@ class MacTube:
         self.invalidate_preview()
         generation = self.preview_generation
         self.preview_title_var.set('Loading video information…')
-        self.preview_button.configure(state='disabled')
+        self.preview_meta_var.set('Looking up available streams on YouTube.')
+        self.format_help_var.set('Looking up specific streams. Automatic is available now.')
+        self._preview_loading(True)
         threading.Thread(target=self._preview_worker, args=(url, self.playlist_var.get(), generation),
                          daemon=True).start()
 
@@ -392,7 +451,7 @@ class MacTube:
     def _apply_preview(self, generation, url, info, rows):
         if generation != self.preview_generation:
             return
-        self.preview_button.configure(state='normal')
+        self._preview_loading(False)
         self.preview_url = url
         title = info.get('title') or 'Untitled video'
         self.preview_title_var.set(title)
@@ -410,39 +469,61 @@ class MacTube:
             self.formats_tree.insert('', 'end', iid=str(i), values=(
                 item['label'] + (' · audio' if item['kind'] == 'audio' else ''),
                 item['ext'], item['fps'], item['codec'], amount))
-        if rows:
-            self.format_help_var.set(f'{len(rows)} options found. Click a row to download that exact stream combination. '
-                                     '“~” means estimated; size may change after merging.')
-        else:
-            self.format_help_var.set('No individual format sizes for playlist previews. '
-                                     'Choose auto quality; each video may have different formats.')
+        self.format_help_var.set(PREVIEWED_FORMATS_HELP if rows else
+                                 'Only Automatic is available for this preview.')
 
     def choose_format(self, _event=None):
         chosen = self.formats_tree.selection()
-        if not chosen:
+        if not chosen or chosen[0] == 'auto':
+            self.selected_format = None
+            self._update_quality_controls()
+            if self.available_formats:
+                self.format_help_var.set(PREVIEWED_FORMATS_HELP)
             return
-        i = int(chosen[0])
-        if i >= len(self.available_formats):
-            return
-        self.selected_format = self.available_formats[i].copy()
-        fmt = self.selected_format
-        size = ('~' if not fmt['exact'] else '') + human_bytes(fmt['size'])
-        self.format_help_var.set(f'Selected: {fmt["label"]} · {fmt["ext"]} · {size}. '
-                                 'A file may be converted to the output format selected below.')
+
+        fmt = self.available_formats[int(chosen[0])]
+        self.selected_format = fmt
+        audio = self.format_var.get() in AUDIO_FORMATS
+        output_changed = (fmt['kind'] == 'audio') != audio
+        if output_changed:
+            self.format_var.set('Original audio' if fmt['kind'] == 'audio' else 'MP4')
+        self._update_quality_controls()
+        size = human_bytes(fmt['size'])
+        if fmt['size'] is not None and not fmt['exact']:
+            size = '~' + size
+        details = f'{fmt["label"]} · {fmt["ext"]} · Stream size: {size}.'
+        if output_changed:
+            details += f' Output format switched to {self.format_var.get()}.'
+        self.format_help_var.set(details)
 
     def clear_format(self):
         self.selected_format = None
-        for item in self.formats_tree.selection():
-            self.formats_tree.selection_remove(item)
-        self.format_help_var.set('Automatic quality enabled. The quality limit and output format below apply.')
+        self.formats_tree.selection_set('auto')
+        self.formats_tree.focus('auto')
+        self.formats_tree.see('auto')
+        self._update_quality_controls()
+        self.format_help_var.set(PREVIEWED_FORMATS_HELP if self.available_formats else
+                                 'Preview a video to see specific streams and available sizes.')
+
+    def _update_quality_controls(self):
+        audio = self.format_var.get() in AUDIO_FORMATS
+        selected = self.selected_format
+        self.quality_mode_var.set(f'Specific stream · {selected["label"]}' if selected else 'Automatic')
+        if selected:
+            self.auto_button.pack(side='right', padx=(0, 10))
+        else:
+            self.auto_button.pack_forget()
+        self.quality_box.configure(state='disabled' if selected or audio else 'readonly')
+        self.check_buttons['Embed subtitles'].configure(state='disabled' if audio else 'normal')
 
     def format_changed(self):
-        audio = self.format_var.get() in ('MP3', 'M4A', 'Original audio')
-        self.quality_box.configure(state='disabled' if audio else 'readonly')
-        self.check_buttons['Embed subtitles'].configure(state='disabled' if audio else 'normal')
-        # Explicit selection remains visible; a selected audio stream + video output would otherwise be ambiguous.
+        audio = self.format_var.get() in AUDIO_FORMATS
         if self.selected_format and ((self.selected_format['kind'] == 'audio') != audio):
             self.clear_format()
+            self.format_help_var.set('Switched to Automatic for the new output format. '
+                                     'Choose a compatible stream to use a specific download.')
+        else:
+            self._update_quality_controls()
 
     def options(self):
         data = {'folder': self.folder_var.get(), 'quality': self.quality_var.get(),
@@ -484,7 +565,7 @@ class MacTube:
         opts = self.options()
         if opts.get('selected_format'):
             selected = opts['selected_format']
-            audio = opts['format'] in ('MP3', 'M4A', 'Original audio')
+            audio = opts['format'] in AUDIO_FORMATS
             if (selected['kind'] == 'audio') != audio:
                 messagebox.showerror('Format mismatch', 'Choose a matching audio/video output type or use automatic quality.')
                 return False
@@ -501,6 +582,7 @@ class MacTube:
 
     def refresh_jobs(self):
         current = self.queue_tree.selection()
+        position = self.queue_tree.yview()[0]
         self.queue_tree.delete(*self.queue_tree.get_children())
         for i, job in enumerate(self.jobs):
             selected = job['options'].get('selected_format')
@@ -508,6 +590,7 @@ class MacTube:
             self.queue_tree.insert('', 'end', iid=str(i), values=(job['status'], job['url'], fmt))
         if current and current[0] in self.queue_tree.get_children():
             self.queue_tree.selection_set(current[0])
+        self.queue_tree.yview_moveto(position)
         self.queue_count.set(f'{len(self.jobs)} items')
 
     def remove_selected(self):
@@ -572,7 +655,8 @@ class MacTube:
                 elif kind == 'preview_error':
                     generation, error = msg[1:]
                     if generation == self.preview_generation:
-                        self.preview_button.configure(state='normal')
+                        self._preview_loading(False)
+                        self.format_help_var.set('Automatic is available. Select Preview video to try again.')
                         self.preview_title_var.set('Could not load preview')
                         self.preview_meta_var.set(error[:250])
                 elif kind == 'thumbnail':
@@ -580,9 +664,9 @@ class MacTube:
                     if generation == self.preview_generation and Image is not None:
                         try:
                             img = Image.open(io.BytesIO(data)).convert('RGB')
-                            img.thumbnail((260, 146))
+                            img.thumbnail((240, 135))
                             self.preview_photo = ImageTk.PhotoImage(img)
-                            self.thumbnail_label.configure(image=self.preview_photo, text='', width=260, height=146)
+                            self.thumbnail_label.configure(image=self.preview_photo, text='')
                         except Exception as exc:
                             self.write_log(f'Cannot display thumbnail: {exc}')
                 elif kind == 'job_status':
