@@ -1,62 +1,48 @@
-# MacTube Pro
+# MacTube Pro — enhanced edition
 
-A lightweight cross-platform Tkinter frontend for `yt-dlp` and FFmpeg.
+Mac-friendly, local Tkinter GUI over `yt-dlp` and FFmpeg. Download only media you have permission to download and follow platform terms.
 
-## Install and launch on macOS
+## Install on your Mac
+
+Your Apple system Python 3.9 / Tk 8.5 produced a blank window. **Use Python 3.13 and `python-tk@3.13`** instead.
 
 ```bash
-brew install python-tk yt-dlp ffmpeg
-cd MacTube-Pro
-python3 mactube.py
+brew install python@3.13 python-tk@3.13 yt-dlp ffmpeg
+python3.13 -m pip install Pillow
+python3.13 -m tkinter
+python3.13 mactube.py
 ```
 
-If Tkinter is unavailable, use the matching Homebrew versioned package (for example `python-tk@3.13` with `python@3.13`). Check with `python3 -m tkinter`.
+Homebrew Python may be externally managed (PEP 668). If `pip install Pillow` is rejected, create a virtual environment instead:
 
-## Install and launch on Windows
-
-Install Python 3.10+ from python.org (make sure Python and Tcl/Tk are installed).
-
-In PowerShell:
-
-```powershell
-winget install yt-dlp.yt-dlp
-winget install Gyan.FFmpeg
-python -m tkinter
-cd MacTube-Pro
-python mactube.py
+```bash
+python3.13 -m venv .venv
+.venv/bin/python -m pip install Pillow
+.venv/bin/python mactube.py
 ```
 
-Restart PowerShell after installing tools so new PATH entries are recognized.
-If `python -m tkinter` opens a **blank window** too, your Python/Tk installation or display environment is likely the issue, not MacTube. Reinstall Python with Tcl/Tk support or try a current python.org installer.
-If only MacTube is blank, run `python -u mactube.py` from a PowerShell window and inspect terminal output and `%USERPROFILE%\mactube-startup-error.log` (only created if an exception occurs).
+The Finder launcher `run.command` automatically uses `.venv/bin/python` when a virtual environment exists; otherwise it uses `python3.13`. Double-click `run.command` in Finder to launch MacTube.
 
-## Features
+## Using the enhanced UI
 
-- Queue multiple YouTube URLs and process them in order
-- Preview a video's title, uploader and duration (when provided by yt-dlp)
-- Single videos or entire playlists
-- Best-quality or resolution-capped video (MP4, MKV, WEBM)
-- MP3, M4A, or original audio
-- Subtitle files, optional embedding for video output, subtitle language
-- Embed metadata and optional thumbnails (compatibility depends on output codecs/container)
-- Cancel running downloads
-- Remember preferences between launches in `~/.mactube-pro/settings.json`
-- Skip successful previous downloads using `~/.mactube-pro/download-archive.txt`
-- Open destination folder, copy URL from queue by double-clicking
+1. Paste a YouTube URL and click **Preview video**. Network access is necessary; yt-dlp returns formats and metadata.
+2. View the thumbnail, title/channel, available streams, resolutions, codecs, and per-format size estimates.
+3. Click a format row to select its `yt-dlp` stream ID(s), or click **Use automatic quality**. Choose a compatible output type: video rows with MP4/MKV/WEBM, audio rows with MP3/M4A/Original audio.
+4. Set the output folder, then click **Download now** or add items to the queue.
+5. Track percentage and downloaded bytes under the tabs. For split video/audio downloads, these values represent the **current stream**, and may restart when the next stream begins. Postprocessing/merging can take longer after 100%.
 
-Each item snapshots the settings when it enters the queue. Failed/cancelled items can be retried with **Start queue**. The queue itself is **not** persisted across launches.
+## Size accuracy
 
-## Notes
+`yt-dlp` reports either `filesize` (known stream size), `filesize_approx` (~), or no size (`Unknown`). Summed video+audio sizes are stream sizes; final output files may differ due to remuxing/transcoding, audio conversion, container metadata, subtitle and thumbnail embedding. Size is not guaranteed to be exact. For MP3 transcoding, source audio size is **not** the final MP3 size.
 
-- Downloads are processed **sequentially**, not concurrently.
-- YouTube restrictions, age limits, authentication requirements, unavailable formats, and changes to YouTube may prevent some downloads.
-- The displayed percentage tracks the current yt-dlp transfer, not necessarily the whole playlist or all post-processing work.
-- `yt-dlp` may pick compatible formats available for each video; requesting MP4 does not guarantee all original codecs will be MP4-native.
-- For some videos, embedding subtitles and cover art is not supported by the chosen container.
-- Download content only when you own it or are otherwise permitted to download it, and follow the platform's rules.
+## Layout
 
-## Structure
+- `mactube.py`: Tkinter interface, preview/format selection, queue
+- `preview.py`: metadata inspection, format sizes, thumbnails
+- `downloader.py`: yt-dlp commands, byte-progress parsing, cancellation
+- `config.py`: preferences and URL validation
+- `run.command`: Finder launcher using Python 3.13
 
-- `mactube.py` — interface, queue and thread-to-UI events
-- `downloader.py` — yt-dlp command generation, previews, process management
-- `config.py` — validation and local settings
+Stored settings and skip-download archive: `~/.mactube-pro/`.
+
+If thumbnails are blank, check that Pillow is installed for the **same Python interpreter** you use to run the GUI. Playlist inspection uses flat metadata, so per-video formats aren't shown for entire playlists.
